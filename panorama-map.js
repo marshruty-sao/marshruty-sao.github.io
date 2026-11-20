@@ -8,7 +8,8 @@
   const valid = p => Array.isArray(p) && p.length >= 2 && Number.isFinite(p[0]) &&
     Number.isFinite(p[1]) && Math.abs(p[0]) <= 180 && Math.abs(p[1]) <= 90;
   let map, manager, startupTimer;
-  let disposed = false, usingWidget = false;
+  let disposed = false, usingHostedViewer = false;
+  const hostedPage = new URL('https://andreikulidzhanov6-del.github.io/marshruty-sao/panorama.html');
 
   function send(type, extra = {}) {
     if (win.parent !== win) win.parent.postMessage({type: 'yard-panorama-' + type, ...extra}, '*');
@@ -41,40 +42,43 @@
     return url.href;
   }
 
-  function showWidget() {
-    if (disposed || usingWidget) return;
-    usingWidget = true;
+  function showHostedViewer() {
+    if (disposed || usingHostedViewer) return;
+    usingHostedViewer = true;
     win.clearTimeout(startupTimer);
-    const frame = $('panoramaWidget');
-    $('notice').textContent = 'Загружаем уличный снимок Яндекса…';
-    frame.onload = () => {
-      if (!disposed) $('notice').textContent = '';
-    };
-    frame.onerror = () => reportError('Виджет не загрузился. Откройте выбранную точку в Яндекс Картах.');
-    frame.src = yandexUrl('/map-widget/v1/');
+    map?.destroy();
+    map = null;
+    const frame = $('hostedViewer');
+    const url = new URL(hostedPage);
+    url.searchParams.set('point', point.join(','));
+    $('panoramaMap').hidden = true;
+    $('legend').hidden = true;
+    $('notice').textContent = '';
+    frame.onerror = () => reportError('Не удалось загрузить панораму. Повторите попытку или откройте точку в Яндекс Картах.');
+    frame.src = url.href;
     frame.hidden = false;
-    doc.body.classList.add('widget-mode');
-    $('cameraLegend').hidden = true;
-    $('location').textContent = '';
-    $('legend').hidden = !map;
-    $('panoramaMap').hidden = !map;
-    send('widget');
-    if (manager) {
-      manager.disableLookup();
-      if (manager.getPlayer()) manager.closePlayer();
-    }
-    if (map) {
-      map.container.fitToViewport();
-      map.setCenter(point, 17);
-    }
   }
 
+  win.addEventListener('message', event => {
+    if (disposed || !usingHostedViewer || event.origin !== hostedPage.origin ||
+        event.source !== $('hostedViewer').contentWindow) return;
+    const data = event.data;
+    if (data?.type === 'yard-panorama-position' && valid(data.point) && data.point.length === 2) {
+      send('position', {point: data.point});
+    } else if (data?.type === 'yard-panorama-map') {
+      send('map');
+    } else if (data?.type === 'yard-panorama-error') {
+      send('error');
+    }
+  });
+
   function changed(player) {
-    if (disposed || usingWidget) return;
+    if (disposed || usingHostedViewer) return;
     const p = player.getPanorama().getPosition().slice(0, 2);
     if (!valid(p)) return;
     win.clearTimeout(startupTimer);
     $('notice').textContent = '';
+    $('fallback').hidden = true;
     map.container.fitToViewport();
     player.fitToViewport();
     $('location').textContent = 'Место съёмки: ' + p[1].toFixed(6) + ', ' + p[0].toFixed(6);
@@ -82,7 +86,7 @@
   }
 
   async function init(api) {
-    if (disposed || usingWidget) return;
+    if (disposed || usingHostedViewer) return;
     map = new api.Map('panoramaMap', {
       center: point, zoom: 18, controls: ['zoomControl'], behaviors: ['drag', 'scrollZoom', 'multiTouch']
     }, {suppressMapOpenBlock: false});
@@ -91,18 +95,17 @@
       balloonContent: 'Выбранная точка: ' + point[1].toFixed(6) + ', ' + point[0].toFixed(6)
     }, {preset: 'islands#orangeCircleDotIcon', zIndex: 1000}));
     manager = await map.getPanoramaManager();
-    if (disposed || usingWidget) return;
+    if (disposed || usingHostedViewer) return;
     manager.events.add('openplayer', () => {
-      if (disposed) return;
-      if (usingWidget) { manager.closePlayer(); return; }
+      if (disposed || usingHostedViewer) return;
       const player = manager.getPlayer();
       if (!player) return;
       changed(player);
       player.events.add('panoramachange', () => changed(player));
-      player.events.add('error', showWidget);
+      player.events.add('error', () => reportError('Изображение панорамы не загрузилось. Можно повторить загрузку или открыть Яндекс Карты.'));
     });
     manager.events.add('closeplayer', () => {
-      if (disposed || usingWidget) return;
+      if (disposed || usingHostedViewer) return;
       $('notice').textContent = 'Выберите место на синей линии карты, чтобы открыть панораму.';
       send('map');
     });
@@ -117,16 +120,16 @@
       return;
     }
     $('fallbackLink').href = yandexUrl('/maps/');
-    startupTimer = win.setTimeout(showWidget, 12000);
+    startupTimer = win.setTimeout(showHostedViewer, 12000);
     const script = doc.createElement('script');
     const url = new URL('https://api-maps.yandex.ru/2.1/');
     url.search = new URLSearchParams({lang: 'ru_RU', coordorder: 'longlat', ns: 'yardPanoramaApi', apikey: mapKey()});
     script.src = url.href;
-    script.onerror = showWidget;
+    script.onerror = showHostedViewer;
     script.onload = () => {
       const api = win.yardPanoramaApi;
-      if (!api) { showWidget(); return; }
-      api.ready(() => init(api).catch(showWidget), showWidget);
+      if (!api) { showHostedViewer(); return; }
+      api.ready(() => init(api).catch(showHostedViewer), showHostedViewer);
     };
     doc.head.append(script);
   }

@@ -389,7 +389,7 @@ if(typeof module==='object'&&module.exports)module.exports=createStreetSearch;el
  const valid=p=>Array.isArray(p)&&p.length===2&&Number.isFinite(p[0])&&Number.isFinite(p[1])&&Math.abs(p[0])<=180&&Math.abs(p[1])<=90;
  function url(widget,coordinates=point){
   const coords=coordinates.join(',');
-  if(widget){const target=new URL('panorama.html',doc.baseURI);target.search=new URLSearchParams({point:coords,v:'5'}).toString();return target.href;}
+  if(widget){const target=new URL('panorama.html',doc.baseURI);target.search=new URLSearchParams({point:coords,v:'6'}).toString();return target.href;}
   return 'https://yandex.ru/maps/?'+new URLSearchParams({'panorama[point]':coords,'panorama[full]':'true',ll:coords,l:'stv',z:'18',lang:'ru_RU'});
  }
  function clear(){clearTimeout(timer);timer=null;if(frame){frame.onload=null;frame.onerror=null;frame.remove();frame=null;}}
@@ -398,7 +398,7 @@ if(typeof module==='object'&&module.exports)module.exports=createStreetSearch;el
   const current=++request;clear();
   status.textContent='Загружаем панораму выбранного места…';retry.hidden=false;overlay.setAttribute('aria-busy','true');
   external.href=url(false);external.hidden=false;canvas.hidden=false;
-  // The official Yandex widget owns panorama navigation; map re-renders never replace this frame.
+  // Route-map updates leave the open panorama player in place.
   // Keep it open until the user explicitly closes the dialog, including load failures and retries.
   frame=doc.createElement('iframe');frame.title='Яндекс Панорамы и карта места съёмки';frame.className='panorama-frame';
   frame.allow='fullscreen';frame.allowFullscreen=true;frame.referrerPolicy='strict-origin-when-cross-origin';
@@ -424,9 +424,6 @@ if(typeof module==='object'&&module.exports)module.exports=createStreetSearch;el
    const meters=Math.round(distance(point,data.point));
    message('Место съёмки: '+data.point[1].toFixed(6)+', '+data.point[0].toFixed(6)+' · '+meters+' м от выбранной точки.');
    external.href=url(false,data.point);
-  }else if(data.type==='yard-panorama-widget'){
-   clearTimeout(timer);timer=null;external.href=url(false,point);
-   message('Для перехода к соседнему снимку нажмите стрелку на панораме.');
   }else if(data.type==='yard-panorama-error'){
    clearTimeout(timer);timer=null;message('Не удалось открыть панораму. Нажмите «Повторить» или «Открыть в Яндекс Картах».');
   }else if(data.type==='yard-panorama-map'){

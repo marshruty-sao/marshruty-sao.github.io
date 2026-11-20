@@ -389,7 +389,7 @@ if(typeof module==='object'&&module.exports)module.exports=createStreetSearch;el
  const valid=p=>Array.isArray(p)&&p.length===2&&Number.isFinite(p[0])&&Number.isFinite(p[1])&&Math.abs(p[0])<=180&&Math.abs(p[1])<=90;
  function url(widget,coordinates=point){
   const coords=coordinates.join(',');
-  if(widget){const target=new URL('panorama.html',doc.baseURI);target.search=new URLSearchParams({point:coords}).toString();return target.href;}
+  if(widget){const target=new URL('panorama.html',doc.baseURI);target.search=new URLSearchParams({point:coords,v:'5'}).toString();return target.href;}
   return 'https://yandex.ru/maps/?'+new URLSearchParams({'panorama[point]':coords,'panorama[full]':'true',ll:coords,l:'stv',z:'18',lang:'ru_RU'});
  }
  function clear(){clearTimeout(timer);timer=null;if(frame){frame.onload=null;frame.onerror=null;frame.remove();frame=null;}}
@@ -424,6 +424,9 @@ if(typeof module==='object'&&module.exports)module.exports=createStreetSearch;el
    const meters=Math.round(distance(point,data.point));
    message('Место съёмки: '+data.point[1].toFixed(6)+', '+data.point[0].toFixed(6)+' · '+meters+' м от выбранной точки.');
    external.href=url(false,data.point);
+  }else if(data.type==='yard-panorama-widget'){
+   clearTimeout(timer);timer=null;external.href=url(false,point);
+   message('Для перехода к соседнему снимку нажмите стрелку на панораме.');
   }else if(data.type==='yard-panorama-error'){
    clearTimeout(timer);timer=null;message('Не удалось открыть панораму. Нажмите «Повторить» или «Открыть в Яндекс Картах».');
   }else if(data.type==='yard-panorama-map'){
@@ -829,7 +832,9 @@ async function connect(key,remember){
  const current=++attempt, ns='yardYmaps'+current,button=$('keyForm').querySelector('[type=submit]');button.disabled=true;button.textContent='Подключение…';$('keyError').textContent='';if(!ym){$('keyNoticeTitle').textContent='Загрузка Яндекс Карт…';$('keyNoticeText').textContent='Подложка подключается автоматически. Маршруты уже доступны.';$('mapStatus').querySelector('span').textContent='Подключение Яндекс Карт…';}
  try{
   const api=await new Promise((resolve,reject)=>{const script=document.createElement('script');let done=false;const timer=setTimeout(()=>finish(new Error('Яндекс Карты не ответили. Проверьте ключ, ограничения домена и доступ к сети.')),20000);function finish(error,value){if(done)return;done=true;clearTimeout(timer);if(error){script.remove();reject(error);}else resolve(value);}script.src='https://api-maps.yandex.ru/2.1/?lang=ru_RU&coordorder=longlat&ns='+ns+'&apikey='+encodeURIComponent(key);script.onerror=()=>finish(new Error('Не удалось загрузить Яндекс Карты. Проверьте подключение и API-ключ.'));script.onload=()=>{if(!window[ns])return finish(new Error('API не инициализирован. Проверьте ключ JavaScript API.'));window[ns].ready(()=>finish(null,window[ns]),e=>finish(new Error(e?.message||'Ошибка доступа к API Яндекса.')));};document.head.append(script);});
-  if(current!==attempt)return;initializingMap=true;initYandex(api);initializingMap=false;if(remember){try{localStorage.setItem('courtyard-yandex-key',key);}catch{toast('Карта подключена. Браузер не разрешил сохранить ключ.');}}else{try{localStorage.removeItem('courtyard-yandex-key');}catch{}}closeDialog('settings');
+  if(current!==attempt)return;initializingMap=true;initYandex(api);initializingMap=false;
+  window.MAP_CONFIG.activeYandexApiKey=key;
+  if(remember){try{localStorage.setItem('courtyard-yandex-key',key);}catch{toast('Карта подключена. Браузер не разрешил сохранить ключ.');}}else{try{localStorage.removeItem('courtyard-yandex-key');}catch{}}closeDialog('settings');
  }catch(e){if(current===attempt){if(initializingMap){try{ym?.destroy();}catch{}ym=null;mapApi=null;manager=null;basemapBusy=false;syncBasemap();$('geometry').removeAttribute('hidden');$('svgControls').hidden=false;resizeMapViewport(true);drawSvg();}$('keyError').textContent=e.message;if(!ym){$('keyNotice').hidden=false;$('keyNoticeTitle').textContent='Подложка пока не загрузилась';$('keyNoticeText').textContent='Проверьте интернет и нажмите «Повторить». Геометрии и фильтры доступны.';$('mapStatus').querySelector('span').textContent='Схема геометрий · без подложки';}if(!$('settings').open)toast('Подложка не подключена. Проверьте настройки Яндекс Карт.');}}
  finally{if(current===attempt){button.disabled=false;button.textContent='Подключить подложку';}}
 }

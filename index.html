@@ -48,9 +48,11 @@
 .street-source{font-size:10px;line-height:1.4;color:#71827e;margin:5px 0 8px}.street-source a{color:inherit}.svg-street-marker text{stroke-linejoin:round}
 
 /* Bottom-left basemap chooser; the menu opens above its button. */
-.basemap-control{position:absolute;left:22px;bottom:44px;z-index:3}
-#basemapToggle{display:flex;align-items:center;gap:8px;min-height:42px;padding:10px 14px;background:white;border:1px solid #dfe6dc;border-radius:9px;box-shadow:0 3px 16px #263d3320;font-size:12px;font-weight:600}
-#basemapToggle:hover,#basemapToggle[aria-expanded="true"]{background:#eef5f0;border-color:#a8c6b6}
+.basemap-control{position:absolute;left:22px;bottom:44px;z-index:3;display:flex;align-items:center;gap:6px}
+#basemapToggle,#locateDevice{display:flex;align-items:center;gap:8px;min-height:42px;padding:10px 14px;background:white;border:1px solid #dfe6dc;border-radius:9px;box-shadow:0 3px 16px #263d3320;font-size:12px;font-weight:600}
+#locateDevice.has-fix{color:#125cb3;border-color:#9dbfe5}
+#deviceStatus{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+#locateDevice:hover,#basemapToggle:hover,#basemapToggle[aria-expanded="true"]{background:#eef5f0;border-color:#a8c6b6}
 .basemap-panel{position:absolute;left:0;bottom:calc(100% + 8px);width:204px;max-width:calc(100vw - 40px);padding:13px 10px 9px;border:1px solid #d8e3dc;border-radius:11px;background:white;box-shadow:0 7px 25px #172f3826}
 .basemap-panel>strong{display:block;padding:0 6px 8px;font-size:12px}
 .basemap-panel label{display:flex;align-items:center;gap:10px;min-height:42px;padding:8px;border-radius:7px;cursor:pointer;font-size:13px}
@@ -144,6 +146,8 @@ dialog:not([open]){display:none}dialog[open]{position:fixed;top:50%;left:50%;tra
    <p id="basemapHint" role="status" aria-live="polite">Подложка ещё не подключена.</p>
   </div>
   <button type="button" id="basemapToggle" aria-expanded="false" aria-controls="basemapPanel" title="Слои подложки"><svg width="20" height="20" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m3 8 9-5 9 5-9 5-9-5Z M3 12l9 5 9-5 M3 16l9 5 9-5"/></svg><span>Слои</span></button>
+  <button type="button" id="locateDevice" aria-label="Моё местоположение" aria-describedby="deviceStatus" title="Показать моё местоположение"><svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none"/><path d="M12 1v4m0 14v4M1 12h4m14 0h4"/></svg><span>Моё место</span></button>
+  <span id="deviceStatus" role="status" aria-live="polite"></span>
  </div>
  <div class="map-footer"><span id="segmentCount"></span><span id="scaleInfo">Колесо — масштаб · перетаскивание — перемещение</span></div>
 </main>
@@ -749,6 +753,123 @@ function updateYandexScale(){
  updateGuideHighlight();
 }
 
+const locateButton = $('locateDevice');
+const deviceDot = '<circle r="13" fill="#1672eb" fill-opacity=".22"/><circle r="7.5" fill="#1672eb" stroke="white" stroke-width="3"/>';
+const deviceIcon = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
+ '<svg xmlns="http://www.w3.org/2000/svg" viewBox="-14 -14 28 28">' + deviceDot + '</svg>');
+let deviceFix = null, deviceMarker = null, watchId = null, watchGeneration = 0;
+let centerOnFix = true, showingDevice = false, permissionDenied = false, manualRequest = false;
+
+function locationStatus(text) {
+ locateButton.title = text;
+ if ($('deviceStatus').textContent !== text) $('deviceStatus').textContent = text;
+}
+function renderDeviceMarker() {
+ if (!ym) { scheduleSvg(); return; }
+ if (!deviceFix) {
+  if (deviceMarker) ym.geoObjects.remove(deviceMarker);
+  deviceMarker = null;
+  return;
+ }
+ if (deviceMarker) deviceMarker.geometry.setCoordinates(deviceFix.point);
+ else {
+  deviceMarker = new mapApi.Placemark(deviceFix.point, {}, {
+   iconLayout:'default#image', iconImageHref:deviceIcon, iconImageSize:[28,28], iconImageOffset:[-14,-14],
+   zIndex:3500, interactivityModel:'default#transparent'
+  });
+  ym.geoObjects.add(deviceMarker);
+ }
+}
+function projectedDevicePoint() {
+ const [lon, lat] = deviceFix.point;
+ return project([lon, Math.max(-85.051129, Math.min(85.051129, lat))]);
+}
+function centerOnDevice() {
+ if (!deviceFix) return;
+ const zoomLevel = deviceFix.accuracy > 3000 ? 12 : deviceFix.accuracy > 300 ? 14 : 16;
+ showingDevice = true;
+ if (ym) ym.setCenter(deviceFix.point, zoomLevel, {duration:0});
+ else {
+  center = projectedDevicePoint();
+  scale = 256 * 2 ** zoomLevel / (2 * Math.PI);
+  scheduleSvg();
+ }
+}
+function stopDeviceWatch() {
+ watchGeneration++;
+ if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+ watchId = null;
+}
+function startDeviceWatch() {
+ if (watchId !== null || document.hidden || permissionDenied) return;
+ if (!window.isSecureContext || !navigator.geolocation) {
+  locationStatus('Геолокация недоступна. Откройте карту по HTTPS в браузере с поддержкой геолокации.');
+  if (manualRequest) toast(locateButton.title);
+  return;
+ }
+ const generation = ++watchGeneration;
+ locationStatus('Определяем местоположение. Если браузер запросит доступ, разрешите геолокацию.');
+ function failed(error) {
+  if (generation !== watchGeneration) return;
+  permissionDenied = error.code === 1;
+  deviceFix = null;
+  locateButton.classList.remove('has-fix');
+  renderDeviceMarker();
+  if (permissionDenied) stopDeviceWatch();
+  locationStatus(permissionDenied
+   ? 'Доступ к геолокации закрыт. Разрешите его в настройках сайта и нажмите «Моё место».'
+   : 'Пока не удалось определить местоположение. Проверьте геолокацию устройства и нажмите «Моё место».');
+  if (manualRequest) toast(locateButton.title);
+  manualRequest = false;
+ }
+ try {
+  watchId = navigator.geolocation.watchPosition(position => {
+   if (generation !== watchGeneration) return;
+   const {longitude, latitude, accuracy} = position.coords;
+   if (!Number.isFinite(longitude) || !Number.isFinite(latitude) || Math.abs(latitude)>90 || Math.abs(longitude)>180) return;
+   deviceFix = {point:[longitude,latitude], accuracy};
+   renderDeviceMarker();
+   locateButton.classList.add('has-fix');
+   const precision = Number.isFinite(accuracy) ? ' · точность около ' + Math.max(1,Math.round(accuracy)) + ' м' : '';
+   locationStatus('Моё местоположение' + precision);
+   if (centerOnFix) centerOnDevice();
+   if (manualRequest) toast(locateButton.title);
+   centerOnFix = false;
+   manualRequest = false;
+  }, failed, {enableHighAccuracy:true, maximumAge:10000, timeout:15000});
+ } catch { failed({code:2}); }
+}
+locateButton.addEventListener('click', () => {
+ closeBasemap();
+ if (deviceFix) { centerOnDevice(); toast(locateButton.title); return; }
+ stopDeviceWatch();
+ centerOnFix = true;
+ manualRequest = true;
+ permissionDenied = false;
+ startDeviceWatch();
+});
+function onMapInteraction(event) {
+ if (locateButton.contains(event.target)) return;
+ centerOnFix = false;
+ showingDevice = false;
+}
+for (const type of ['pointerdown','wheel','keydown']) {
+ document.addEventListener(type, onMapInteraction, {capture:true, passive:true});
+}
+function suspendDeviceLocation() {
+ if (showingDevice) centerOnFix = true;
+ stopDeviceWatch();
+ deviceFix = null;
+ locateButton.classList.remove('has-fix');
+ renderDeviceMarker();
+}
+document.addEventListener('visibilitychange', () => {
+ if (document.hidden) suspendDeviceLocation();
+ else startDeviceWatch();
+});
+window.addEventListener('pagehide', suspendDeviceLocation);
+window.addEventListener('pageshow', startDeviceWatch);
+
 function fitOverview(){
  fit([...shown(), ...boundaries.filter(boundaryVisible)]);
 }
@@ -776,6 +897,10 @@ function drawSvg(){
  if(state.labels)for(const r of rs){const [x,y]=screen(projected.get(r.id).anchor);if(x< -200||x>svgW+200||y< -40||y>svgH+40)continue;out.push(`<text class="svg-label" data-route="${r.id}" x="${(x+7).toFixed(2)}" y="${(y-6).toFixed(2)}" fill="${r.color}">${esc(r.name)}<title>${esc(r.name)}</title></text>`);}
  if(state.endpoints)for(const r of rs)for(const kind of ['start','end']){const [x,y]=screen(projected.get(r.id)[kind]);if(x< -50||x>svgW+50||y< -50||y>svgH+50)continue;out.push(`<g class="svg-endpoint" data-route="${r.id}" data-endpoint="${kind}" transform="translate(${x.toFixed(2)} ${y.toFixed(2)}) scale(${style.endpoint/28}) translate(-14 -14)" role="button" aria-label="${endpointName(kind)} — ${esc(r.name)}"><title>${endpointName(kind)} — ${esc(r.name)} · ${coordinateText(r[kind])}</title>${endpointSvg(kind).replace(/<svg[^>]*>|<\/svg>/g,'')}</g>`);}
  if(streetMarker){const [x,y]=screen(project(streetMarker.coordinates));out.push(`<g class="svg-street-marker" transform="translate(${x.toFixed(2)} ${y.toFixed(2)})" pointer-events="none"><title>${esc(streetMarker.address)} · ориентир улицы</title><circle r="12" fill="#2563eb" fill-opacity=".16"/><circle r="6" fill="#2563eb" stroke="white" stroke-width="2"/><text x="12" y="-12" font-family="sans-serif" font-size="13" font-weight="700" fill="#163c78" stroke="white" stroke-width="4" paint-order="stroke">${esc(streetMarker.name)}</text></g>`);}
+ if (deviceFix) {
+  const [x,y] = screen(projectedDevicePoint());
+  out.push(`<g data-device-location transform="translate(${x} ${y})" pointer-events="none"><title>Моё местоположение</title>${deviceDot}</g>`);
+ }
  $('geometry').innerHTML=out.join('');
  $('routePreview').hidden=true;document.body.classList.add('map-ready');
 }
@@ -819,7 +944,7 @@ function resizeMapViewport(initial=false){
  svgH=Math.max(180,Math.round(b.height||$('mapStage').clientHeight||visibleHeight-150));
  $('geometry').setAttribute('viewBox',`0 0 ${svgW} ${svgH}`);
  if(ym){ym.container.fitToViewport();scheduleDirections();}
- else if(initial||scale===1)fitOverview();
+ else if(initial||scale===1){if(showingDevice && deviceFix)centerOnDevice();else fitOverview();}
  else scheduleSvg();
 }
 function scheduleViewport(){cancelAnimationFrame(viewportFrame);viewportFrame=requestAnimationFrame(()=>resizeMapViewport());}
@@ -865,7 +990,10 @@ function initYandex(api){
  ym.geoObjects.add(labelCollection);
  endpointCollection=new api.GeoObjectCollection();
  for(const r of routes){const points=[];for(const kind of ['start','end']){const marker=new api.Placemark(r[kind],{hintContent:esc(endpointName(kind)+' — '+r.name),balloonContentHeader:esc(endpointName(kind)+' — '+r.name),balloonContentBody:coordinateText(r[kind])},{iconLayout:'default#image',iconImageHref:'data:image/svg+xml;charset=utf-8,'+encodeURIComponent(endpointSvg(kind)),iconImageSize:[28,28],iconImageOffset:[-14,-14],zIndex:2000,openBalloonOnClick:false});marker.events.add('click',e=>showDetail(r,null,kind,panoramaPointFromEvent(e)));points.push(marker);endpointCollection.add(marker);}endpointsById.set(r.id,points);}
- ym.geoObjects.add(endpointCollection);updateYandex();fitOverview();
+ ym.geoObjects.add(endpointCollection);updateYandex();
+ deviceMarker = null;
+ renderDeviceMarker();
+ if (showingDevice && deviceFix) centerOnDevice(); else fitOverview();
  // SVGElement.hidden is not reflected to the DOM like HTMLElement.hidden.
  // Set the attribute explicitly so the opaque preview cannot cover Yandex.
  $('geometry').setAttribute('hidden','');$('svgControls').hidden=true;$('keyNotice').hidden=true;$('mapStatus').classList.add('connected');$('mapStatus').querySelector('span').textContent='Яндекс Карты · маршруты дворов';$('connect').textContent='Настройки подложки';$('scaleInfo').textContent='Нажмите на маршрут для подробностей';streetSearch.refresh();
@@ -894,6 +1022,7 @@ let savedKey='';try{savedKey=localStorage.getItem('courtyard-yandex-key')||'';}c
 const initialKey=savedKey||window.MAP_CONFIG?.yandexApiKey||'';
 if(savedKey){$('apiKey').value=savedKey;$('rememberKey').checked=true;}
 if(initialKey)connect(initialKey,Boolean(savedKey));
+startDeviceWatch();
 })();
 </script>
 <script data-source="portable-settings.js">
